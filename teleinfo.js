@@ -1,25 +1,24 @@
-var serialport = require('serialport');
+var SerialPort = require('serialport');
 var events = require('events');
-var util = require('util');
 
-function teleinfo(port) {
+function teleinfo(portName) {
 	// Evénements 'trame' et 'tramedecodee'
 	var trameEvents = new events.EventEmitter();
-
-	var serialPort = new serialport.SerialPort(port, {
-		baudrate: 1200,
+	
+	const Readline = require('@serialport/parser-readline');
+	const port = new SerialPort(portName, {
+		baudRate: 1200,
 		dataBits: 7,
 		parity: 'even',
-		stopBits: 1,
-		// Caractères séparateurs = fin de trame + début de trame
-		parser: serialport.parsers.readline(String.fromCharCode(13,3,2,10))
+		stopBits: 1
 	});
-
-	serialPort.on('data', function(data) {
+	const parser = port.pipe(new Readline({ delimiter: String.fromCharCode(13,3,2,10) })); // Caractères séparateurs = fin de trame + début de trame
+	
+	parser.on('data', function(data) {
 		trameEvents.emit('trame', data);
 	});
 
-	serialPort.on('error', function(err) {
+	port.on('error', function(err) {
 		trameEvents.emit('error', err);
 	});
 
@@ -31,7 +30,7 @@ function teleinfo(port) {
 			decodeLigne(arrayOfData[i], trame, trameEvents);
 		}
 		// trame incomplete s'il manque la première ligne ADCO
-		if (!(trame.ADCO===undefined)) {
+		if (!(trame.ADCO===undefined) && (!(trame.BASE===undefined) || (!(trame.HCHP===undefined) && !(trame.HCHC===undefined)))) {
 			trameEvents.emit('tramedecodee', trame);
 		}
 		else {
@@ -47,7 +46,7 @@ function teleinfo(port) {
 function decodeLigne(ligneBrute, trame, trameEvents) {
 	// Ligne du type "PAPP 00290 ," (Etiquette / Donnée / Checksum)
 	var elementsLigne = ligneBrute.split(' ');
-	if (elementsLigne.length === 3) {
+	if (elementsLigne.length >= 3) {
 		// Spec chk : somme des codes ASCII + ET logique 03Fh + ajout 20 en hexadécimal
 		// Résultat toujours un caractère ASCII imprimable allant de 20 à 5F en hexadécimal
 		// Checksum calculé sur etiquette+space+données => retirer les 2 derniers caractères
