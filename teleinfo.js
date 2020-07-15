@@ -1,19 +1,21 @@
 var SerialPort = require('serialport');
 var events = require('events');
+var configs = require('./configs');
+const { REPL_MODE_STRICT } = require('repl');
 
-function teleinfo(portName) {
+function teleinfo(portName, config = configs.HISTORIQUE) {
 	// Evénements 'trame' et 'tramedecodee'
 	var trameEvents = new events.EventEmitter();
-	
+
 	const Readline = require('@serialport/parser-readline');
 	const port = new SerialPort(portName, {
-		baudRate: 1200,
+		baudRate: config.baudRate,
 		dataBits: 7,
 		parity: 'even',
 		stopBits: 1
 	});
 	const parser = port.pipe(new Readline({ delimiter: String.fromCharCode(13,3,2,10) })); // Caractères séparateurs = fin de trame + début de trame
-	
+
 	parser.on('data', function(data) {
 		trameEvents.emit('trame', data);
 	});
@@ -23,14 +25,14 @@ function teleinfo(portName) {
 	});
 
 	trameEvents.on('trame', function(data) {
-		// Decode trame '9 lignes en tarif bleu base'
 		var trame = {};
+		// Decode trame '9 lignes en tarif bleu base'
 		var arrayOfData = data.split('\r\n');
 		for (var i=0; i < arrayOfData.length; i++) {
-			decodeLigne(arrayOfData[i], trame, trameEvents);
+			decodeLigne(arrayOfData[i], trame, trameEvents, config);
 		}
 		// trame incomplete s'il manque la première ligne ADCO
-		if (!(trame.ADCO===undefined) && (!(trame.BASE===undefined) || (!(trame.HCHP===undefined) && !(trame.HCHC===undefined)))) {
+		if (trame.ADCO || trame.ADSC) {
 			trameEvents.emit('tramedecodee', trame);
 		}
 		else {
@@ -43,46 +45,70 @@ function teleinfo(portName) {
 }
 
 
-function decodeLigne(ligneBrute, trame, trameEvents) {
-	// Ligne du type "PAPP 00290 ," (Etiquette / Donnée / Checksum)
-	var elementsLigne = ligneBrute.split(' ');
-	if (elementsLigne.length >= 3) {
-		// Spec chk : somme des codes ASCII + ET logique 03Fh + ajout 20 en hexadécimal
-		// Résultat toujours un caractère ASCII imprimable allant de 20 à 5F en hexadécimal
-		// Checksum calculé sur etiquette+space+données => retirer les 2 derniers caractères
-		var sum = 0;
-		for (var j=0; j < ligneBrute.length-2; j++) {
-			sum += ligneBrute.charCodeAt(j);
-		}
-		sum = (sum & 63) + 32;
-		if (sum === ligneBrute.charCodeAt(j+1)) {
-			// Checksum ok -> on ajoute la propriété à la trame
-			// Conversion en valeur numérique pour certains cas
-			switch (elementsLigne[0].substr(0,4)) {
-				case 'BASE': // Index Tarif bleu
-				case 'HCHC': // Index Heures creuses
-				case 'HCHP': // Index Heures pleines
-				case 'EJPH': // Index EJP (HN et HPM)
-				case 'BBRH': // Index Tempo (HC/HP en jours Blanc, Bleu et Rouge)
-				case 'ISOU': // Intensité souscrite
-				case 'IINS': // Intensité instantannée (1/2/3 pour triphasé)
-				case 'ADPS': // Avertissement de dépassement
-				case 'IMAX': // Intensité max appelée (1/2/3 pour triphasé)
-				case 'PAPP': // Puissance apparente
-				case 'PMAX': // Puissance max triphasée atteinte
-					trame[elementsLigne[0]]= Number(elementsLigne[1]);
-					break;
-				default:
-					trame[elementsLigne[0]]= elementsLigne[1];
+function decodeLigne(ligneBrute, trame, trameEvents, config) {
+	var sum = config.computeChecksum(ligneBrute);
+	var checksum = ligneBrute.charCodeAt(ligneBrute.length-1);
+	if (sum === checksum) {
+		// Checksum ok -> on ajoute la propriété à la trame
+		var elementsLigne = ligneBrute.split(config.separator);
+		if (elementsLigne.length >= 3) {
+			const label = elementsLigne[0];
+			const props = config.labels[label];
+			if(!props) {
+				trameEvents.emit('error', new Error('Label inconnu: ' + label));
+				return false;
 			}
-			return true;
-		} else {
-			var err = new Error('Erreur de checksum : \n' + ligneBrute + '\n Checksum calculé/reçu : ' + sum + ' / ' + ligneBrute.charCodeAt(j+1)); 
-			trameEvents.emit('error', err);
+			if(props.date) {
+				if(elementsLigne.length >= 4) {
+					const date = convertDate(elementsLigne[1]);
+					const value = props.numeric ? Number(elementsLigne[2]) : elementsLigne[2];
+					if(Number.isNaN(date)) {
+						trameEvents.emit('error', new Error('Date invalide: ' + elementsLigne[1]));
+						return false;
+					}
+					if(Number.isNaN(value)) {
+						trameEvents.emit('error', new Error('Valeur invalide: ' + elementsLigne[2]));
+						return false;
+					}
+					if(label == 'DATE') {
+						trame[label] = date.toISOString();
+					} else {
+						trame[label] = {
+							date: date.toISOString(),
+							value: props.numeric ? Number(elementsLigne[2]) : elementsLigne[2]
+						};
+					}
+					return true;
+				}
+			} else {
+				const value = props.numeric ? Number(elementsLigne[1]) : elementsLigne[1];
+				if(Number.isNaN(value)) {
+					trameEvents.emit('error', new Error('Valeur invalide: ' + elementsLigne[1]));
+					return false;
+				}
+				trame[label] = props.numeric ? Number(elementsLigne[1]) : elementsLigne[1];
+				return true;
+			}
 		}
+	} else {
+		var err = new Error('Erreur de checksum : \n' + ligneBrute + '\n Checksum calculé/reçu : ' + sum + ' / ' + checksum);
+		trameEvents.emit('error', err);
 	};
+	return false;
 };
 
+function convertDate(str) {
+	const dateStr = new String((new Date()).getFullYear()).substring(0,2) + str.substring(1,3) + '-' + str.substring(3,5) + '-' + str.substring(5,7) + 'T' + str.substring(7,9) + ':' + str.substring(9,11) + ':' + str.substring(11,13) + 'Z';
+	const timestamp = Date.parse(dateStr);
+	console.log(str);
+	console.log(dateStr);
+	if(Number.isNaN(timestamp)) {
+		return timestamp;
+	} else {
+		return new Date(timestamp - (str.substring(0,1) === 'E' ? (2*60*60*1000) : (60*60*1000)));
+	}
+};
 
 module.exports = teleinfo;
+module.exports.version = configs;
 
