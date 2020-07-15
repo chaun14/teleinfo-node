@@ -100,8 +100,6 @@ function decodeLigne(ligneBrute, trame, trameEvents, config) {
 function convertDate(str) {
 	const dateStr = new String((new Date()).getFullYear()).substring(0,2) + str.substring(1,3) + '-' + str.substring(3,5) + '-' + str.substring(5,7) + 'T' + str.substring(7,9) + ':' + str.substring(9,11) + ':' + str.substring(11,13) + 'Z';
 	const timestamp = Date.parse(dateStr);
-	console.log(str);
-	console.log(dateStr);
 	if(Number.isNaN(timestamp)) {
 		return timestamp;
 	} else {
