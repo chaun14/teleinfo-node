@@ -26,6 +26,11 @@ Récupérer l'instance d'EventEmitter du module en appelant la fonction teleinfo
 var trameEvents = teleinfo('/dev/ttyAMA0');
 ```
 
+```javascript
+// Configuration TIC Standard
+var trameEvents = teleinfo('/dev/ttyAMA0', teleinfo.version.STANDARD);
+```
+
 Les trames téléinfo sont envoyées sous forme d'évènements :
 * trame : trames brutes non vérifiées (utile uniquement à des fins de debug)
 * tramedecodee : trames sous forme d'un objet (checksums validés pour chaque propriété)
